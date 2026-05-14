@@ -6,13 +6,12 @@
 <title>Laynes-FRI — Gestor de Trabajos</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script type="module">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
 // ════════════════════════════════════════════════════════════════════════════
 // FIREBASE CONFIG
 // ════════════════════════════════════════════════════════════════════════════
-import{initializeApp}from'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
-import{getFirestore,doc,getDoc,setDoc,updateDoc,deleteDoc,collection,getDocs,onSnapshot,writeBatch}from'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-
 const firebaseConfig={
   apiKey:"AIzaSyBKzq2ribGQjWgH8iyIrAm1j_bcUGDFCNI",
   authDomain:"laynes-fri.firebaseapp.com",
@@ -22,29 +21,28 @@ const firebaseConfig={
   appId:"1:932186209306:web:023fa6e9fa2b9e8f2425a3"
 };
 
-const fbApp=initializeApp(firebaseConfig);
-const db=getFirestore(fbApp);
+firebase.initializeApp(firebaseConfig);
+const db=firebase.firestore();
 window._db=db;
 window._fbReady=true;
 
 // ── FIRESTORE HELPERS ────────────────────────────────────────────────────────
 window.fsGet=async(col,id)=>{
-  try{const d=await getDoc(doc(db,col,id));return d.exists()?d.data():null}catch(e){console.warn('fsGet error',e);return null}
+  try{const d=await db.collection(col).doc(id).get();return d.exists?d.data():null}catch(e){console.warn('fsGet error',e);return null}
 };
 window.fsSet=async(col,id,data)=>{
-  try{await setDoc(doc(db,col,id),data)}catch(e){console.warn('fsSet error',e)}
+  try{await db.collection(col).doc(id).set(data)}catch(e){console.warn('fsSet error',e)}
 };
 window.fsDel=async(col,id)=>{
-  try{await deleteDoc(doc(db,col,id))}catch(e){console.warn('fsDel error',e)}
+  try{await db.collection(col).doc(id).delete()}catch(e){console.warn('fsDel error',e)}
 };
 window.fsGetAll=async(col)=>{
-  try{const snap=await getDocs(collection(db,col));const r={};snap.forEach(d=>r[d.id]=d.data());return r}catch(e){console.warn('fsGetAll error',e);return{}}
+  try{const snap=await db.collection(col).get();const r={};snap.forEach(d=>r[d.id]=d.data());return r}catch(e){console.warn('fsGetAll error',e);return{}}
 };
-window.fsListen=onSnapshot;
-window._collection=collection;
-window._doc=doc;
+window.fsListen=(colRef,cb)=>colRef.onSnapshot(cb);
+window._collection=(db,col)=>db.collection(col);
+window._doc=(db,col,id)=>db.collection(col).doc(id);
 
-// Signal app that Firebase is ready
 window.dispatchEvent(new Event('firebase-ready'));
 </script>
 <style>
@@ -3159,82 +3157,67 @@ async function loadAllFromCloud(){
   }
 }
 
-// ── REAL-TIME SUBSCRIPTIONS ───────────────────────────────────────────────────
 function subscribeToCloud(){
-  if(!window._fbReady||!window.fsListen)return;
-  // Unsubscribe previous
+  if(!window._fbReady)return;
   _cloudUnsubscribers.forEach(u=>u());
   _cloudUnsubscribers=[];
-  const db=window._db;
-  const col=window._collection;
+
+  const listen=(col,cb)=>{
+    const unsub=db.collection(col).onSnapshot(cb);
+    _cloudUnsubscribers.push(unsub);
+  };
 
   // Operarios
-  _cloudUnsubscribers.push(
-    window.fsListen(col(db,'operarios'),snap=>{
-      if(_cloudSyncing)return;
-      S.operarios=snap.docs.map(d=>d.data()).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
-      renderOps();renderSlots();
-    })
-  );
+  listen('operarios',snap=>{
+    if(_cloudSyncing)return;
+    S.operarios=snap.docs.map(d=>d.data()).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+    renderOps();renderSlots();
+  });
   // Vehiculos
-  _cloudUnsubscribers.push(
-    window.fsListen(col(db,'vehiculos'),snap=>{
-      if(_cloudSyncing)return;
-      S.vehiculos=snap.docs.map(d=>d.data()).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
-      renderVehs();renderSlots();
-    })
-  );
+  listen('vehiculos',snap=>{
+    if(_cloudSyncing)return;
+    S.vehiculos=snap.docs.map(d=>d.data()).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+    renderVehs();renderSlots();
+  });
   // Slots
-  _cloudUnsubscribers.push(
-    window.fsListen(col(db,'slots'),snap=>{
-      if(_cloudSyncing)return;
-      snap.docChanges().forEach(change=>{
-        const k=change.doc.id;
-        if(change.type==='removed'){delete S.slots[k];}
-        else{S.slots[k]=JSON.parse(change.doc.data().data||'[]');}
-      });
-      if(S.tab==='dia')renderSlots();
-      else if(S.tab==='semana')renderWeek();
-      else if(S.tab==='sitios')renderSitios();
-      else if(S.tab==='prog'){
-        renderProg();
-        if(_progTab==='vehiculos')renderVehAssign();
-      }
-      renderCal();
-    })
-  );
+  listen('slots',snap=>{
+    if(_cloudSyncing)return;
+    snap.docChanges().forEach(change=>{
+      const k=change.doc.id;
+      if(change.type==='removed'){delete S.slots[k];}
+      else{S.slots[k]=JSON.parse(change.doc.data().data||'[]');}
+    });
+    if(S.tab==='dia')renderSlots();
+    else if(S.tab==='semana')renderWeek();
+    else if(S.tab==='sitios')renderSitios();
+    else if(S.tab==='prog'){renderProg();if(_progTab==='vehiculos')renderVehAssign();}
+    renderCal();
+  });
   // Etiquetas
-  _cloudUnsubscribers.push(
-    window.fsListen(col(db,'etiquetas'),snap=>{
-      if(_cloudSyncing)return;
-      S.etiquetas=snap.docs.map(d=>d.data()).sort((a,b)=>(a.order||0)-(b.order||0));
-    })
-  );
-  // Auth users (to detect blocks in real-time)
-  _cloudUnsubscribers.push(
-    window.fsListen(col(db,'auth_users'),snap=>{
-      AUTH.users=snap.docs.map(d=>d.data());
-      // Check if current user got blocked
-      if(AUTH.session&&AUTH.session.username!==MASTER_ADMIN.username){
-        const u=AUTH.users.find(u=>u.username===AUTH.session.username);
-        if(u&&u.status==='blocked'){
-          AUTH.session=null;authSaveSession();
-          showAuthView('login','Tu acceso fue bloqueado por el administrador.');
-        }
+  listen('etiquetas',snap=>{
+    if(_cloudSyncing)return;
+    S.etiquetas=snap.docs.map(d=>d.data()).sort((a,b)=>(a.order||0)-(b.order||0));
+  });
+  // Auth users
+  listen('auth_users',snap=>{
+    AUTH.users=snap.docs.map(d=>d.data());
+    if(AUTH.session&&AUTH.session.username!==MASTER_ADMIN.username){
+      const u=AUTH.users.find(u=>u.username===AUTH.session.username);
+      if(u&&u.status==='blocked'){
+        AUTH.session=null;authSaveSession();
+        showAuthView('login','Tu acceso fue bloqueado por el administrador.');
       }
-    })
-  );
+    }
+  });
   // Caja Chica
-  _cloudUnsubscribers.push(
-    window.fsListen(col(db,'caja_chica'),snap=>{
-      snap.docChanges().forEach(change=>{
-        const opId=change.doc.id;
-        if(change.type==='removed'){delete S.cajaChica[opId];}
-        else{S.cajaChica[opId]=JSON.parse(change.doc.data().data||'[]');}
-      });
-      if(S.tab==='cajachica')renderCCPanel();
-    })
-  );
+  listen('caja_chica',snap=>{
+    snap.docChanges().forEach(change=>{
+      const opId=change.doc.id;
+      if(change.type==='removed'){delete S.cajaChica[opId];}
+      else{S.cajaChica[opId]=JSON.parse(change.doc.data().data||'[]');}
+    });
+    if(S.tab==='cajachica')renderCCPanel();
+  });
 }
 
 // ── SAVE HELPERS ─────────────────────────────────────────────────────────────
